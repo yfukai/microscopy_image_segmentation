@@ -18,10 +18,22 @@ from tqdm import tqdm
 from skimage.io import imsave
 from time import sleep
 import yaml
+import cellpose
+from matplotlib import pyplot as plt
+from os import path
+import torch
+import sys
+from time import sleep
+import GPUtil
 
+@click.command()
+@click.argument("zarr_path", type=click.Path(exists=True))
+@click.argument("metadata_yaml", type=click.Path(exists=True))
+@click.argument("report_path", type=click.Path())
 def main(
     zarr_path,
     metadata_yaml,
+    report_path,
     cellpose_model_path=None,
     suffix="",
     diameter=0,
@@ -36,12 +48,15 @@ def main(
     roi=None,
     ):
 
-    assert path.isdir(zarr_path)
     zarr_file=zarr.open(zarr_path,"r+")
+    with open(metadata_yaml, "r") as f:
+        metadata=yaml.safe_load(f)
+    channel_names=metadata["channel_names"]
 
-    output_dir=zarr_path+"_cellpose_examples"    
-    os.makedirs(output_dir, exist_ok=True)
-    image_id=path.basename(zarr_path.rstrip(os.sep))
+    example_dir=path.join(report_path,"cellpose_examples")
+    os.makedirs(example_dir,exist_ok=True)
+    log_dir=path.join(report_path,"cellpose_log")
+    os.makedirs(log_dir,exist_ok=True)
 
     ds_image=zarr_file["image"] #assume TCZYX
     sizeT=ds_image.shape[0]
@@ -64,30 +79,19 @@ def main(
                 dtype=np.float32,
                 overwrite=True)
 
-    channel_names=ds_image.attrs["channel_names"]
-    c_channel_ind=get_channel_ind(cyto_channel,channel_names)
+    c_channel_ind=channel_names.index(cyto_channel)
     try:
         if nucleus_channels is None: n_channel_inds=None
         else: n_channel_inds=list(map(
-            lambda x:get_channel_ind(x,channel_names),nucleus_channels))
+            lambda x:channel_names.index(x),nucleus_channels))
     except AssertionError:
         n_channel_inds=None
     
     def predict(args):
-        import numpy as np
-        from cellpose import models,plot
-        from matplotlib import pyplot as plt
-        from os import path
-        import torch
-        import sys
-        from time import sleep
-        import GPUtil
-
         jj,(t,z)=args
         # to avoid logger corruption
-        import cellpose
         import logging
-        log_file=path.join(output_dir,f"cellpose_{jj}.log")
+        log_file=path.join(log_dir,f"cellpose_{jj}.log")
         cellpose.logger.handlers=[]
         cellpose.logger.addHandler(logging.FileHandler(log_file))
         cellpose.logger.addHandler(logging.StreamHandler(sys.stdout))
@@ -115,7 +119,8 @@ def main(
 
         #get a device with sufficient memory
         all_deviceIDs=GPUtil.getAvailable("id",limit=10,maxMemory=1.0,maxLoad=1.0)
-        excludeID=[j for j in all_deviceIDs if not j in np.arange(gpu_offset,gpu_offset+gpu_count)]
+        excludeID=[j for j in all_deviceIDs 
+                   if not j in np.arange(gpu_offset,gpu_offset+gpu_count)]
         sleep(jj%gpu_count*5)
         while True:
             deviceIDs=GPUtil.getAvailable(
@@ -125,15 +130,15 @@ def main(
                 gpu_index=deviceIDs[0]
                 break
             sleep(1)
-        print(jj,gpu_count,"gpu: ",gpu_index)
+        print(jj,gpu_count,"using gpu: ",gpu_index)
 
         if cellpose_model_path is None:
-            model = models.Cellpose(gpu=True,torch=True,
+            model = cellpose.models.Cellpose(gpu=True,torch=True,
                                    device=torch.device(gpu_index))
             masks, flow, _, _ = model.eval(\
                    [prediction_img], channels=prediction_channels)
         else:
-            model = models.CellposeModel(
+            model = cellpose.models.CellposeModel(
                    gpu=True,
                    torch=True,
                    device=torch.device(gpu_index),
@@ -154,26 +159,22 @@ def main(
         
         if show_segmentation_ind_ratio and jj==int(show_segmentation_ind_ratio*sizeT*sizeZ):
             fig = plt.figure(figsize=(40,10))
-            plot.show_segmentation(
+            cellpose.plot.show_segmentation(
                 fig, 
                 prediction_img, 
                 masks[0], 
                 flow[0][0],
                 channels=prediction_channels)
             
-            fig.savefig(path.join(output_dir,f"cellpose_example_{suffix}.pdf"))
+            fig.savefig(path.join(example_dir,f"cellpose_example_{suffix}.pdf"))
             img_prefix=f"cellpose_output_{image_id}_t{t}_z{z}_{suffix}"
-            imsave(path.join(output_dir,f"{img_prefix}_brightfield.tiff"),cyto_img)
+            imsave(path.join(example_dir,f"{img_prefix}_brightfield.tiff"),cyto_img)
             if n_channel_inds is not None:
-                imsave(path.join(output_dir,f"{img_prefix}_nucleus.tiff"),nucleus_img)
-            imsave(path.join(output_dir,f"{img_prefix}_mask.tiff"),masks[0])
+                imsave(path.join(example_dir,f"{img_prefix}_nucleus.tiff"),nucleus_img)
+            imsave(path.join(example_dir,f"{img_prefix}_mask.tiff"),masks[0])
 
     args=list(enumerate(np.ndindex(sizeT,sizeZ)))
       
-    params_path = path.join(output_dir, "cellpose_prediction_params.yaml")
-    with open(params_path, "w") as f:
-        yaml.dump(params_dict, f)
-
 
 if __name__ == "__main__":
     main()
