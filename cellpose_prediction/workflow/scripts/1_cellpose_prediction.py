@@ -7,78 +7,21 @@ predict cell positions using cellpose
 
 from os import path
 import os
-import signal
-from subprocess import Popen, PIPE
 import warnings
 
 import numpy as np
 import pandas as pd
 import zarr
-import fire
+import click
 
 from tqdm import tqdm
 from skimage.io import imsave
-import ipyparallel as ipp
 from time import sleep
 import yaml
-import random
 
-#import sys
-#sys.path.append("../")
-#print(os.listdir("../"))
-#from utils import with_ipcluster
-
-def with_ipcluster(func):
-    def wrapped(*args, **kwargs):
-        if "ipcluster_execute" in kwargs.keys() \
-            and not kwargs["ipcluster_execute"]:
-            return func(*args, **kwargs)
-        if "ipcluster_nproc" in kwargs.keys():
-            nproc = kwargs["ipcluster_nproc"]
-        else:
-            nproc = 1
-        if "ipcluster_timeout" in kwargs.keys():
-            timeout = kwargs["ipcluster_timeout"]
-        else:
-            timeout = 100
-
-        hash = random.getrandbits(128)
-        profile_name="default_%032x" % hash
-        command = ["ipcluster", "start", "--profile", profile_name, "--n", str(nproc)]
-        try:
-            print("starting ipcluster...")
-            proc = Popen(command, stdout=PIPE, stderr=PIPE)
-            i = 0
-            while True:
-                sleep(1)
-                outs = proc.stderr.readline().decode("ascii")
-                print(outs.replace("\n", ""))
-                if "successfully" in outs:
-                    break
-                if i > timeout:
-                    raise TimeoutError("ipcluster timeout")
-                i = i + 1
-            print("started.")
-            res = func(*args, **kwargs, ipcluster_profile=profile_name)
-        finally:
-            print("terminating ipcluster...")
-            os.kill(proc.pid, signal.SIGINT)
-    return wrapped
-
-
-warnings.simplefilter("error",FutureWarning)
-warnings.simplefilter("ignore",pd.errors.PerformanceWarning)
-
-def get_channel_ind(c_name,channels):
-    ind=[j for j,c in enumerate(channels) if c_name in str(c)]
-    if not len(ind)==1:
-        print(c_name,channels)
-        raise AssertionError()
-    return ind[0]
-
-@with_ipcluster
-def cellpose_prediction(
+def main(
     zarr_path,
+    metadata_yaml,
     cellpose_model_path=None,
     suffix="",
     diameter=0,
@@ -90,16 +33,9 @@ def cellpose_prediction(
     cellpose_normalize=True,
     gpu_count=4,
     gpu_offset=0,
-    ipcluster_nproc=4,
     roi=None,
-    ipcluster_execute=True,
-    ipcluster_profile="default",
     ):
 
-    print(locals())
-    params_dict=locals()
-
-  
     assert path.isdir(zarr_path)
     zarr_file=zarr.open(zarr_path,"r+")
 
@@ -137,37 +73,6 @@ def cellpose_prediction(
     except AssertionError:
         n_channel_inds=None
     
-    if ipcluster_execute:
-        cli = ipp.Client(profile=ipcluster_profile)
-    #    cli = ipp.Client(profile="default")
-        dview = cli[:]
-        dview.clear()
-        bview = cli.load_balanced_view()
-
-        dview.push(dict(
-            ds_image=ds_image,
-            ds_mask=ds_mask,
-            ds_flow=ds_flow,
-            ds_prob=ds_prob,
-            n_channel_inds=n_channel_inds,
-            c_channel_ind=c_channel_ind,
-            output_dir=output_dir,
-            gpu_count=gpu_count,
-            gpu_offset=gpu_offset,
-            cellpose_model_path=cellpose_model_path,
-            cellprob_threshold=cellprob_threshold,
-            diameter=diameter,
-            cellpose_normalize=cellpose_normalize,
-            flow_threshold=flow_threshold,
-            show_segmentation_ind_ratio=show_segmentation_ind_ratio,
-            sizeT=sizeT,
-            sizeZ=sizeZ,
-            image_id=image_id,
-            roi=roi,
-        ),block=True)
-        sleep(2)
-
-    #@profile
     def predict(args):
         import numpy as np
         from cellpose import models,plot
@@ -264,31 +169,11 @@ def cellpose_prediction(
             imsave(path.join(output_dir,f"{img_prefix}_mask.tiff"),masks[0])
 
     args=list(enumerate(np.ndindex(sizeT,sizeZ)))
-    print(args)
-    if ipcluster_execute:
-        res = bview.map_async(predict,args)
-        res.wait_interactive()
-        _ = res.get()
-    else:
-        for arg in tqdm(args):
-            predict(arg)
-       
-    print(zarr_path + " finished")
-
-    print(params_dict)
+      
     params_path = path.join(output_dir, "cellpose_prediction_params.yaml")
     with open(params_path, "w") as f:
         yaml.dump(params_dict, f)
 
 
 if __name__ == "__main__":
-    try:
-        cellpose_prediction(
-            snakemake.input["zarr_path"], # type: ignore
-            **snakemake.config["cellpose_prediction"], # type: ignore
-            ipcluster_nproc=snakemake.threads, #type: ignore
-        )
-    except NameError as e:
-        if not "snakemake" in str(e):
-            raise e
-        fire.Fire(cellpose_prediction)
+    main()
