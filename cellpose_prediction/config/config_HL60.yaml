@@ -1,0 +1,11 @@
+############# basic configuration ############
+
+cellpose_model_path: 
+  &cellpose_model_path "/mnt/showers/AxioObserver7/ImageData/Fukai/cellpose/models/cellpose_residual_on_style_on_concatenation_off_cellpose_2021_04_02_08_32_54.191693"
+
+############# misc configuration ############
+
+cellpose_prediction:
+  cellpose_model_path: *cellpose_model_path
+  gpu_offset: 0
+  gpu_count: 4

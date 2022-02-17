@@ -1,0 +1,45 @@
+from glob import glob
+from os import path
+
+stitched_zarrs = glob(path.join("**","*stain*",config["name_pattern"]+".zarr"), recursive=True)
+print(stitched_zarrs)
+rule all:
+  input: 
+    expand("{stitched_zarr}/mask", stitched_zarr=stitched_zarrs)
+
+
+#rule predict_from_zarr:
+#  input: 
+#    expand("{stitched_zarr}/mask", stitched_zarr=stitched_zarrs)
+
+#rule summarize_regionprops:
+#  input:
+#    zarr_path = "{stitched_zarr}/mask", 
+#  output:
+#    "{stitched_zarr}_regionprops.hdf5",
+#  threads:
+#    workflow.cores
+#   container:
+#    "docker://yfukai/docker-gpu-conda:cuda10.2-cudnn8-devel-ubuntu18.04-miniconda3"
+#  conda:
+#    "envs/conda_env.yaml"
+#  script:
+#    "scripts/summarize_regionprops.py"
+
+
+rule cellpose_prediction:
+  input:
+    zarr_path = "{stitched_zarr}", 
+  output:
+    directory("{stitched_zarr}/mask")
+  threads:
+    4
+#    workflow.cores
+  container:
+    "docker://yfukai/docker-gpu-conda:cuda10.2-cudnn8-devel-ubuntu18.04-miniconda3"
+  conda:
+    "envs/conda_env.yaml"
+  script:
+    "scripts/cellpose_prediction.py"
+
+
