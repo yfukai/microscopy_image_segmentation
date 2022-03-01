@@ -30,22 +30,22 @@ import GPUtil
 @click.argument("zarr_path", type=click.Path(exists=True))
 @click.argument("metadata_yaml", type=click.Path(exists=True))
 @click.argument("report_path", type=click.Path())
+@click.option("cellpose_model_path", type=click.Path())
 def main(
     zarr_path,
     metadata_yaml,
     report_path,
-    cellpose_model_path=None,
-    suffix="",
-    diameter=0,
+    result_suffix="",
     cyto_channel="Phase",
     nucleus_channels=None,
-    show_segmentation_ind_ratio=False,
-    cellprob_threshold=0.,
-    flow_threshold=0.4,
-    cellpose_normalize=True,
-    gpu_count=4,
-    gpu_offset=0,
     roi=None,
+    show_segmentation_ind=0,
+    cellpose_model_path=None,
+    cellpose_diameter=0,
+    cellpose_cellprob_threshold=0.,
+    cellpose_flow_threshold=0.4,
+    cellpose_normalize=True,
+    gpu_indices=None
     ):
 
     zarr_file=zarr.open(zarr_path,"r+")
@@ -63,17 +63,17 @@ def main(
     sizeZ=ds_image.shape[2]
     shape_mask=[ds_image.shape[0],*ds_image.shape[2:]]
     chunks=[1,1,2048,2048]
-    ds_mask=zarr_file.create_dataset(f"mask{suffix}",
+    ds_mask=zarr_file.create_dataset(f"mask{result_suffix}",
                 shape=shape_mask,
                 chunks=chunks,
                 dtype=np.int32,
                 overwrite=True)
-    ds_flow=zarr_file.create_dataset(f"flow_hsv{suffix}",
+    ds_flow=zarr_file.create_dataset(f"flow_hsv{result_suffix}",
                 shape=[*shape_mask,3],
                 chunks=[*chunks,3],
                 dtype=np.int32,
                 overwrite=True)
-    ds_prob=zarr_file.create_dataset(f"cell_prob{suffix}",
+    ds_prob=zarr_file.create_dataset(f"cell_prob{result_suffix}",
                 shape=shape_mask,
                 chunks=chunks,
                 dtype=np.float32,
@@ -120,8 +120,8 @@ def main(
         #get a device with sufficient memory
         all_deviceIDs=GPUtil.getAvailable("id",limit=10,maxMemory=1.0,maxLoad=1.0)
         excludeID=[j for j in all_deviceIDs 
-                   if not j in np.arange(gpu_offset,gpu_offset+gpu_count)]
-        sleep(jj%gpu_count*5)
+                   if not j in gpu_indices]
+        sleep(jj%len(gpu_indices)*5)
         while True:
             deviceIDs=GPUtil.getAvailable(
                 "memory",maxMemory=1.0,
@@ -130,7 +130,7 @@ def main(
                 gpu_index=deviceIDs[0]
                 break
             sleep(1)
-        print(jj,gpu_count,"using gpu: ",gpu_index)
+        print(jj,gpu_indices,"using gpu: ",gpu_index)
 
         if cellpose_model_path is None:
             model = cellpose.models.Cellpose(gpu=True,torch=True,
@@ -147,17 +147,17 @@ def main(
             masks, flow, _ = model.eval(
                    [prediction_img],rescale=[1.], 
                    channels=prediction_channels,
-                   cellprob_threshold=cellprob_threshold,
-                   diameter=diameter,
+                   cellprob_threshold=cellpose_cellprob_threshold,
+                   diameter=cellpose_diameter,
                    normalize=cellpose_normalize,
-                   flow_threshold=flow_threshold)
+                   flow_threshold=cellpose_flow_threshold)
 
         ds_mask[t,z,roi_slices[0],roi_slices[1]]=masks[0]
         ds_flow[t,z,roi_slices[0],roi_slices[1]]=flow[0][0]
         ds_prob[t,z,roi_slices[0],roi_slices[1]]=flow[0][2]
         torch.cuda.empty_cache() 
         
-        if show_segmentation_ind_ratio and jj==int(show_segmentation_ind_ratio*sizeT*sizeZ):
+        if jj==int(show_segmentation_ind):
             fig = plt.figure(figsize=(40,10))
             cellpose.plot.show_segmentation(
                 fig, 
@@ -166,8 +166,8 @@ def main(
                 flow[0][0],
                 channels=prediction_channels)
             
-            fig.savefig(path.join(example_dir,f"cellpose_example_{suffix}.pdf"))
-            img_prefix=f"cellpose_output_{image_id}_t{t}_z{z}_{suffix}"
+            fig.savefig(path.join(example_dir,f"cellpose_example_{result_suffix}.pdf"))
+            img_prefix=f"cellpose_output_t{t}_z{z}_{result_suffix}"
             imsave(path.join(example_dir,f"{img_prefix}_brightfield.tiff"),cyto_img)
             if n_channel_inds is not None:
                 imsave(path.join(example_dir,f"{img_prefix}_nucleus.tiff"),nucleus_img)
